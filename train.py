@@ -10,6 +10,7 @@ import fire
 import time
 import json
 import wandb
+import tqdm
 
 from pathlib import Path
 
@@ -68,10 +69,11 @@ def train(
     ckpt_dir: str,
     tokenizer_path: str,
     train_json_file: str,
-    lr: float = 1e-4,
+    lr: float = 2e-4, # they used 1.5e-4 cosine decaying to 1.5e-5
     max_seq_len: int = 2048,
     max_batch_size: int = 32,
-    epochs=1,
+    epochs=5,
+    skip_initial_node=True
 ):
     local_rank, world_size = setup_model_parallel()
     if local_rank > 0:
@@ -82,16 +84,23 @@ def train(
         ckpt_dir, tokenizer_path, local_rank, world_size, max_seq_len, max_batch_size
     )
     optimizer = optim.SGD(model.parameters(), lr, momentum=0)
+    if skip_initial_node:
+        endstd = "<|END_STANDARD_PROMPT|>"
+        train_json_processed = [{**x,"prompt":endstd.join( x["prompt"].split(endstd)[1:]) if endstd in x["prompt"] else x["prompt"]} for x in train_json]
+    else:
+        train_json_processed = train_json
     token_pairs = [
         (
             tokenizer.encode(x["prompt"], bos=True, eos=False),
             tokenizer.encode(x["completion"], bos=False, eos=True),
         )
-        for x in train_json
+        for x in train_json_processed
     ]
-    mask_prefixes = [len(x[0]) for x in token_pairs]
-    data = [torch.tensor([x[0] + x[1]], dtype=torch.int64).cuda() for x in token_pairs]
-
+    data_and_prefixes = [(torch.tensor([x[0] + x[1]], dtype=torch.int64).cuda(),len(x[0])) for x in token_pairs]
+    data_and_prefixes_fitting = [x for x in data_and_prefixes if x[0].shape[1]<=max_seq_len]
+    n_within = len(data_and_prefixes_fitting)
+    n_too_long = len(data_and_prefixes)-len(data_and_prefixes_fitting)
+    print(f"{n_within} within size {n_too_long} too long {n_within/(n_within+n_too_long)}")
     # wandb init
     wandb.init(
         # set the wandb project where this run will be logged
@@ -101,21 +110,23 @@ def train(
             "learning_rate": lr,
             "architecture": "7B",
             "dataset": "completion_evals.json",
-            "dataset_size": len(train_json),
+            "dataset_size": len(data_and_prefixes_fitting),
             "epochs": epochs,
         },
     )
     for epoch in range(epochs):
-        for dp, pre in zip(data, mask_prefixes):
-            if dp.shape[1] > max_seq_len:
-                print("seq too loong", dp.shape)
-                continue
+        for dp, pre in tqdm(data_and_prefixes_fitting):
             optimizer.zero_grad()
+            # try:
             out = model.forward_train_mode(dp, 0)
+            # except:
+            #     from llama import mem_report
+            #     mem_report.mem_report()
+            #     break
             loss = compute_loss(out, dp, pre)
+            wandb.log({"loss": loss.detach().cpu().item(),"epoch":epoch})
             loss.backward()
             optimizer.step()
-            # wandb.log({"loss": loss.detach().cpu().item()})
 
 
 def compute_loss(out, tokens, mask_pre):
@@ -130,6 +141,5 @@ def compute_loss(out, tokens, mask_pre):
 if __name__ == "__main__":
     fire.Fire(train)
 
-# torchrun --nproc_per_node 1 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/7B --tokenizer_path /home/taoroalin/llama/downloaded-weights//tokenizer.model
 # torchrun --nproc_per_node 1 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/7B --tokenizer_path /home/taoroalin/llama/downloaded-weights//tokenizer.model --train_json_file=arc-data/completion_evals.json
-# torchrun --nproc_per_node 8 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/65B --tokenizer_path /home/taoroalin/llama/downloaded-weights/tokenizer.model
+# torchrun --nproc_per_node 8 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/65B --tokenizer_path /home/taoroalin/llama/downloaded-weights//tokenizer.model --train_json_file=arc-data/completion_evals.json

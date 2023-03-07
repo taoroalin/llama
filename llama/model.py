@@ -15,7 +15,7 @@ from fairscale.nn.model_parallel.layers import (
     RowParallelLinear,
     ColumnParallelLinear,
 )
-
+import torch.utils.checkpoint as grad_checkpoint
 
 @dataclass
 class ModelArgs:
@@ -248,6 +248,7 @@ class Transformer(nn.Module):
 
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
+        """INFERENCE ONLY!"""
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
         self.freqs_cis = self.freqs_cis.to(h.device)
@@ -261,26 +262,27 @@ class Transformer(nn.Module):
             mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
 
         for layer in self.layers:
-            h = layer(h, start_pos, freqs_cis, mask, is_train=False)
+            h = layer(h, start_pos, freqs_cis, mask, False)
         h = self.norm(h)
         output = self.output(h[:, -1, :])  # only compute last logits
         return output.float()
 
     def forward_train_mode(self, tokens: torch.Tensor, start_pos: int):
+        """TRAIN ONLY!"""
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
         self.freqs_cis = self.freqs_cis.to(h.device)
         freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
 
-        mask = None
-        if seqlen > 1:
-            mask = torch.full(
-                (1, 1, seqlen, seqlen), float("-inf"), device=tokens.device
-            )
-            mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
+        mask = torch.full(
+            (1, 1, seqlen, seqlen), float("-inf"), device=tokens.device
+        )
+        mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
 
         for layer in self.layers:
-            h = layer(h, start_pos, freqs_cis, mask, is_train=True)
+            def fn_to_checkpoint(h,start_pos,freqs_cis,mask):
+                return layer(h, start_pos, freqs_cis, mask,True)
+            h =grad_checkpoint.checkpoint( layer,h,start_pos,freqs_cis, mask,True, use_reentrant=False)
         h = self.norm(h)
         output = self.output(h)  # only compute last logits
         return output.float()
