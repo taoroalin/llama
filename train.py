@@ -121,19 +121,25 @@ def train(
                 "epochs": epochs,
             },
         )
-    for i,(dp, pre) in enumerate(data_and_mask_filtered):
-        ln = dp.shape[1]
-        optimizer.zero_grad()
-        out = model.forward_train_mode(dp, 0)
-        loss = compute_loss(out, dp, pre)
-        loss.backward()
-        if warmup_steps is not None and i<warmup_steps:
-            optimizer.lr=lr*(i+1)/(warmup_steps+1)
-        else:
-            optimizer.lr=math.cos(i/len(data_and_mask_filtered)*math.pi/2)
-        optimizer.step()
-        if local_rank==0:
-            wandb.log({"loss": loss.detach().cpu().item(),"len":ln,"pre":pre})
+    try:
+        for i,(dp, pre) in enumerate(data_and_mask_filtered):
+            ln = dp.shape[1]
+            optimizer.zero_grad()
+            out = model.forward_train_mode(dp, 0)
+            loss,loss_pos = compute_loss(out, dp, pre)
+            loss.backward()
+            if warmup_steps is not None and i<warmup_steps:
+                optimizer.lr=lr*(i+1)/(warmup_steps+1)
+            else:
+                optimizer.lr=lr*math.cos(i/len(data_and_mask_filtered)*math.pi/2)
+            optimizer.step()
+            if local_rank==0:
+                wandb.log({"loss": loss.detach().cpu().item(),"len":ln,"pre":pre,"lr":optimizer.lr,**{f"loss_pos{i}":x for i,x in enumerate(loss_pos)}})
+            if i!=0 and i%500==0:
+                save_model(model,save_dir+f"/steps{i}",local_rank,params)
+    except Exception as e:
+        save_model(model,save_dir,local_rank,params)
+        raise e
     save_model(model,save_dir,local_rank,params)
 
 def compute_loss(out, tokens, mask_pre):
@@ -141,8 +147,10 @@ def compute_loss(out, tokens, mask_pre):
     out = out[:, mask_pre - 1 : -1]
     logprobs = torch.log_softmax(out, dim=-1)
     on_correct = torch.gather(logprobs, 2, tokens.unsqueeze(-1))
+    pos_section_len = 400
+    on_correct_by_pos = on_correct[0,:pos_section_len*int(on_correct.shape[1]/pos_section_len),0].reshape(-1,pos_section_len).detach().cpu().mean(dim=1)
     loss = on_correct.mean()
-    return -loss
+    return -loss, -on_correct_by_pos
 
 def save_model(model,folder,local_rank,params):
     os.system(f"mkdir -p {folder}")
@@ -153,4 +161,4 @@ def save_model(model,folder,local_rank,params):
 if __name__ == "__main__":
     fire.Fire(train)
 
-# torchrun --nproc_per_node 4 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/30B --tokenizer_path /home/taoroalin/llama/downloaded-weights//tokenizer.model --train_json_file=arc-data/completion_evals.json --save_dir="checkpoints/30bft0"
+# torchrun --nproc_per_node 2 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/13B --tokenizer_path /home/taoroalin/llama/downloaded-weights//tokenizer.model --train_json_file=pretrain_data/books_16000_5000.json --save_dir="checkpoints/13Blong1" --truncate-seq-len=True
