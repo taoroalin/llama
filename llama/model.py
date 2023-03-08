@@ -15,7 +15,7 @@ from fairscale.nn.model_parallel.layers import (
     RowParallelLinear,
     ColumnParallelLinear,
 )
-
+import torch.utils.checkpoint as grad_checkpoint
 
 @dataclass
 class ModelArgs:
@@ -79,6 +79,7 @@ class Attention(nn.Module):
 
         self.n_local_heads = args.n_heads // fs_init.get_model_parallel_world_size()
         self.head_dim = args.dim // args.n_heads
+        self.args = args
 
         self.wq = ColumnParallelLinear(
             args.dim,
@@ -129,16 +130,16 @@ class Attention(nn.Module):
             if not hasattr(self, "cache_k"):
                 self.cache_k = torch.zeros(
                     (
-                        args.max_batch_size,
-                        args.max_seq_len,
+                        self.args.max_batch_size,
+                        self.args.max_seq_len,
                         self.n_local_heads,
                         self.head_dim,
                     )
                 ).cuda()
                 self.cache_v = torch.zeros(
                     (
-                        args.max_batch_size,
-                        args.max_seq_len,
+                        self.args.max_batch_size,
+                        self.args.max_seq_len,
                         self.n_local_heads,
                         self.head_dim,
                     )
@@ -280,7 +281,7 @@ class Transformer(nn.Module):
             mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
 
         for layer in self.layers:
-            h = layer(h, start_pos, freqs_cis, mask, is_train=True)
+            h = grad_checkpoint.checkpoint(layer,h, start_pos, freqs_cis, mask, is_train=True,use_reentrant=False)
         h = self.norm(h)
         output = self.output(h)  # only compute last logits
         return output.float()

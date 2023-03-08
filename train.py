@@ -61,24 +61,25 @@ def load(
     model.load_state_dict(checkpoint, strict=False)
 
     print(f"Loaded in {time.time() - start_time:.2f} seconds")
-    return model, tokenizer
+    return model, tokenizer,params
 
 
 def train(
     ckpt_dir: str,
     tokenizer_path: str,
     train_json_file: str,
-    lr: float = 1e-4,
+    lr: float = 1e-5,
     max_seq_len: int = 2048,
     max_batch_size: int = 32,
-    epochs=1,
+    epochs=5,
+    save_dir="checkpoints/13bft0"
 ):
     local_rank, world_size = setup_model_parallel()
     if local_rank > 0:
         sys.stdout = open(os.devnull, "w")
     train_json = json.load(open(train_json_file))
     # print(len(train_json), train_json[0])
-    model, tokenizer = load(
+    model, tokenizer ,params= load(
         ckpt_dir, tokenizer_path, local_rank, world_size, max_seq_len, max_batch_size
     )
     optimizer = optim.SGD(model.parameters(), lr, momentum=0)
@@ -89,34 +90,33 @@ def train(
         )
         for x in train_json
     ]
-    mask_prefixes = [len(x[0]) for x in token_pairs]
-    data = [torch.tensor([x[0] + x[1]], dtype=torch.int64).cuda() for x in token_pairs]
+    data_and_mask = [(torch.tensor([x[0] + x[1]], dtype=torch.int64).cuda(),len(x[0])) for x in token_pairs]
+    data_and_mask_filtered = [x for x in data_and_mask if x[0].shape[1]<=max_seq_len]
 
     # wandb init
-    wandb.init(
-        # set the wandb project where this run will be logged
-        project="llama-7b-finetune",
-        # track hyperparameters and run metadata
-        config={
-            "learning_rate": lr,
-            "architecture": "7B",
-            "dataset": "completion_evals.json",
-            "dataset_size": len(train_json),
-            "epochs": epochs,
-        },
-    )
+    if local_rank==0:
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project="llama-7b-finetune",
+            # track hyperparameters and run metadata
+            config={
+                "learning_rate": lr,
+                "architecture": ckpt_dir,
+                "dataset": "completion_evals.json",
+                "dataset_size": len(data_and_mask_filtered),
+                "epochs": epochs,
+            },
+        )
     for epoch in range(epochs):
-        for dp, pre in zip(data, mask_prefixes):
-            if dp.shape[1] > max_seq_len:
-                print("seq too loong", dp.shape)
-                continue
+        for dp, pre in data_and_mask_filtered:
             optimizer.zero_grad()
             out = model.forward_train_mode(dp, 0)
             loss = compute_loss(out, dp, pre)
             loss.backward()
             optimizer.step()
-            # wandb.log({"loss": loss.detach().cpu().item()})
-
+            if local_rank==0:
+                wandb.log({"loss": loss.detach().cpu().item()})
+        save_model(model,save_dir,local_rank,params)
 
 def compute_loss(out, tokens, mask_pre):
     tokens = tokens[:, mask_pre:]
@@ -126,10 +126,15 @@ def compute_loss(out, tokens, mask_pre):
     loss = on_correct.mean()
     return -loss
 
+def save_model(model,folder,local_rank,params):
+    os.system(f"mkdir -p {folder}")
+    if local_rank==0:
+        json.dump(params,open(f"{folder}/params.json","w"))
+    torch.save(model.state_dict(), f"{folder}/consolidated.0{local_rank}.pth")
 
 if __name__ == "__main__":
     fire.Fire(train)
 
 # torchrun --nproc_per_node 1 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/7B --tokenizer_path /home/taoroalin/llama/downloaded-weights//tokenizer.model
-# torchrun --nproc_per_node 1 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/7B --tokenizer_path /home/taoroalin/llama/downloaded-weights//tokenizer.model --train_json_file=arc-data/completion_evals.json
+# torchrun --nproc_per_node 2 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/13B --tokenizer_path /home/taoroalin/llama/downloaded-weights//tokenizer.model --train_json_file=arc-data/completion_evals.json
 # torchrun --nproc_per_node 8 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/65B --tokenizer_path /home/taoroalin/llama/downloaded-weights/tokenizer.model
