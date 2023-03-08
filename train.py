@@ -11,6 +11,7 @@ import time
 import json
 import wandb
 import random
+import math
 
 from pathlib import Path
 
@@ -74,7 +75,8 @@ def train(
     max_batch_size: int = 32,
     truncate_seq_len:bool=False,
     epochs=1,
-    save_dir="checkpoints/13bft0"
+    save_dir="checkpoints/13bft0",
+    warmup_steps=20,
 ):
     local_rank, world_size = setup_model_parallel()
     if local_rank > 0:
@@ -119,17 +121,20 @@ def train(
                 "epochs": epochs,
             },
         )
-    for epoch in range(epochs):
-        for dp, pre in data_and_mask_filtered:
-            ln = dp.shape[1]
-            optimizer.zero_grad()
-            out = model.forward_train_mode(dp, 0)
-            loss = compute_loss(out, dp, pre)
-            loss.backward()
-            optimizer.step()
-            if local_rank==0:
-                wandb.log({"loss": loss.detach().cpu().item(),"len":ln,"pre":pre})
-        save_model(model,save_dir+f"/epoch{epoch}",local_rank,params)
+    for i,(dp, pre) in enumerate(data_and_mask_filtered):
+        ln = dp.shape[1]
+        optimizer.zero_grad()
+        out = model.forward_train_mode(dp, 0)
+        loss = compute_loss(out, dp, pre)
+        loss.backward()
+        if warmup_steps is not None and i<warmup_steps:
+            optimizer.lr=lr*(i+1)/(warmup_steps+1)
+        else:
+            optimizer.lr=math.cos(i/len(data_and_mask_filtered)*math.pi/2)
+        optimizer.step()
+        if local_rank==0:
+            wandb.log({"loss": loss.detach().cpu().item(),"len":ln,"pre":pre})
+    save_model(model,save_dir,local_rank,params)
 
 def compute_loss(out, tokens, mask_pre):
     tokens = tokens[:, mask_pre:]
