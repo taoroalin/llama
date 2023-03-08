@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # This software may be used and distributed according to the terms of the GNU General Public License version 3.
 
-from typing import Tuple
+from typing import Tuple,Optional
 import os
 import sys
 import torch
@@ -10,6 +10,7 @@ import fire
 import time
 import json
 import wandb
+import random
 
 from pathlib import Path
 
@@ -71,14 +72,23 @@ def train(
     lr: float = 1e-5,
     max_seq_len: int = 2048,
     max_batch_size: int = 32,
-    epochs=5,
+    truncate_seq_len:bool=False,
+    epochs=1,
     save_dir="checkpoints/13bft0"
 ):
     local_rank, world_size = setup_model_parallel()
     if local_rank > 0:
         sys.stdout = open(os.devnull, "w")
     train_json = json.load(open(train_json_file))
-    # print(len(train_json), train_json[0])
+    
+    # random.shuffle(train_json)
+    
+    if truncate_seq_len:
+        for i,x in enumerate(train_json):
+            x["prompt"] = x["prompt"][:max_seq_len*5]
+            x["completion"] = x["completion"][:max_seq_len*5]
+            
+    print(len(train_json), train_json[0])
     model, tokenizer ,params= load(
         ckpt_dir, tokenizer_path, local_rank, world_size, max_seq_len, max_batch_size
     )
@@ -91,8 +101,10 @@ def train(
         for x in train_json
     ]
     data_and_mask = [(torch.tensor([x[0] + x[1]], dtype=torch.int64).cuda(),len(x[0])) for x in token_pairs]
+    if truncate_seq_len:
+        data_and_mask = [(x[0][:,:max_seq_len],x[1]) for x in data_and_mask]
     data_and_mask_filtered = [x for x in data_and_mask if x[0].shape[1]<=max_seq_len]
-
+    
     # wandb init
     if local_rank==0:
         wandb.init(
@@ -109,14 +121,15 @@ def train(
         )
     for epoch in range(epochs):
         for dp, pre in data_and_mask_filtered:
+            ln = dp.shape[1]
             optimizer.zero_grad()
             out = model.forward_train_mode(dp, 0)
             loss = compute_loss(out, dp, pre)
             loss.backward()
             optimizer.step()
             if local_rank==0:
-                wandb.log({"loss": loss.detach().cpu().item()})
-        save_model(model,save_dir,local_rank,params)
+                wandb.log({"loss": loss.detach().cpu().item(),"len":ln,"pre":pre})
+        save_model(model,save_dir+f"/epoch{epoch}",local_rank,params)
 
 def compute_loss(out, tokens, mask_pre):
     tokens = tokens[:, mask_pre:]
@@ -135,6 +148,4 @@ def save_model(model,folder,local_rank,params):
 if __name__ == "__main__":
     fire.Fire(train)
 
-# torchrun --nproc_per_node 1 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/7B --tokenizer_path /home/taoroalin/llama/downloaded-weights//tokenizer.model
-# torchrun --nproc_per_node 2 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/13B --tokenizer_path /home/taoroalin/llama/downloaded-weights//tokenizer.model --train_json_file=arc-data/completion_evals.json
-# torchrun --nproc_per_node 8 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/65B --tokenizer_path /home/taoroalin/llama/downloaded-weights/tokenizer.model
+# torchrun --nproc_per_node 4 train.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/30B --tokenizer_path /home/taoroalin/llama/downloaded-weights//tokenizer.model --train_json_file=arc-data/completion_evals.json --save_dir="checkpoints/30bft0"

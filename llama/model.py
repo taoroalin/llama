@@ -283,5 +283,5 @@ class Transformer(nn.Module):
         for layer in self.layers:
             h = grad_checkpoint.checkpoint(layer,h, start_pos, freqs_cis, mask, is_train=True,use_reentrant=False)
         h = self.norm(h)
-        output = self.output(h)  # only compute last logits
+        output = self.output(h)
         return output.float()
