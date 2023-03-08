@@ -7,8 +7,8 @@ filenames = os.listdir(basedir)
 random.shuffle(filenames)
 
 result = []
-chars_per = 4000*4
-n_seqs = 5000
+chars_per = 5000*4
+n_seqs = 1999000
 for i,fn in enumerate(filenames):
     
     book = open(f"{basedir}/{fn}").read()[2000:] # skip beginning bc maybe table of contents or other non-book stuff
@@ -16,5 +16,6 @@ for i,fn in enumerate(filenames):
         result.append({"prompt":"","completion":book[:chars_per]})
         book = book[chars_per:]
         if len(result)>=n_seqs:
-            json.dump(result,open(f"pretrain_data/books_{chars_per}_{n_seqs}.json","w"))
+            json.dump(result,open(f"pretrain_data/books_{chars_per}_{len(result)}.json","w"))
             exit()
+json.dump(result,open(f"pretrain_data/books_{chars_per}_{len(result)}.json","w"))
