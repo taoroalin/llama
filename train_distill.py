@@ -24,9 +24,9 @@ import itertools
 
 
 def process_distill_data(
-    sequences, tokenizer, max_seq_len=2048, max_dps: int = 800
+    sequences, tokenizer, max_seq_len=2048, max_dps: int = 800, chunking=2
 ) -> torch.Tensor:
-    print("special tokens",tokenizer.bos_id,tokenizer.eos_id,tokenizer.pad_id)
+    print("special tokens", tokenizer.bos_id, tokenizer.eos_id, tokenizer.pad_id)
     tokens = []
     masks = []
     n_rejected_no_model = 0
@@ -34,23 +34,29 @@ def process_distill_data(
         if all(x["type"] != "modelOutput" for x in seq):
             continue
         toks = [tokenizer.encode(x["body"], bos=False, eos=False) for x in seq]
-        lens = torch.tensor([len(x) for x in toks])
+        lens = torch.tensor([0]+[len(x) for x in toks])
         lenbefore = lens.cumsum(dim=0)
-        total_len = sum(lens)
-        mask = torch.zeros(total_len).long()
         alltoks = torch.tensor(list(itertools.chain(*toks))).long()
+        mask = torch.zeros_like(alltoks)
         for i, s in enumerate(seq):
-            if s["type"] == "modelOutput":
-                mask[lenbefore[i] : lenbefore[i] + lens[i]] = 1
-        chunk_size = 1024
-        n_contexts = int(total_len / chunk_size) - 1
+            if s["type"] == "modelOutput" and s["body"].startswith("<|ACTION_START|>"):
+                mask[lenbefore[i] : lenbefore[i + 1]] = 1
+                if len(tokens) < 5:
+                    print("lenbefore", lenbefore)
+                    print("body",s["body"])
+                    print(
+                        "printy by model",
+                        tokenizer.decode(
+                            alltoks[lenbefore[i] : lenbefore[i + 1]].tolist()
+                        ),
+                    )
+        chunk_size = int(max_seq_len / chunking)
+        n_contexts = int(alltoks.shape[0] / chunk_size) - 1
         for i in range(n_contexts):
-            dp = alltoks[i * chunk_size : (i + 2) * chunk_size]
-            msk = mask[i * chunk_size : (i + 2) * chunk_size]
+            dp = alltoks[i * chunk_size : (i + chunking) * chunk_size]
+            msk = mask[i * chunk_size : (i + chunking) * chunk_size]
             dp[0] = tokenizer.bos_id
             if msk.sum() > 30:
-                if len(tokens) < 5:
-                    print([x["body"] for x in seq], msk)
                 tokens.append(dp)
                 masks.append(dp)
             else:
@@ -70,11 +76,11 @@ def train(
     tokenizer_path: str = "/home/taoroalin/llama/downloaded-weights/tokenizer.model",
     lr: float = 3e-5,
     max_seq_len: int = 2048,
-    batch_size: int = 4,
+    batch_size: int = 8,
     epochs=1,
     save_dir="checkpoints/13bft0",
     warmup_steps=20,
-    max_dps: int = 800,
+    max_dps: int = 1000000,
     gpu_rank_offset: int = 0,
 ):
     local_rank, world_size = setup_model_parallel(gpu_rank_offset)
@@ -119,7 +125,7 @@ def train(
                 optimizer.lr = lr * (i + 1) / (warmup_steps + 1)
             else:
                 optimizer.lr = lr * math.cos(
-                    i / (len(batched_tokens) * 1.2) * math.pi / 2
+                    i / (len(batched_tokens) * 1.1) * math.pi / 2
                 )
             optimizer.step()
             if local_rank == 0:
@@ -139,7 +145,6 @@ def train(
 
 
 def compute_loss(out, tokens, mask):
-    print("shapes", out.shape, tokens.shape, mask.shape)
     mask = mask[:, 1:]
     logprobs = torch.log_softmax(out[:, :-1], dim=-1)
     on_correct = torch.gather(logprobs, 2, tokens[:, 1:].unsqueeze(-1))[:, :, 0]
@@ -151,4 +156,5 @@ def compute_loss(out, tokens, mask):
 if __name__ == "__main__":
     fire.Fire(train)
 
-# torchrun --nproc_per_node 1 --rdzv_backend=c10d  --rdzv_endpoint=localhost:29501 train_distill.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/7B  --train_json_file=arc-data/context-distill-sequences_pos.json --save_dir="checkpoints/7Bdistill0" --gpu-rank-offset=1
+# torchrun --nproc_per_node 1 --rdzv_backend=c10d  --rdzv_endpoint=localhost:29501 train_distill.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/7B  --train_json_file=arc-data/context-distill-sequences_pos.json --save_dir="checkpoints/7Bdistill0" --gpu-rank-offset=2
+# torchrun --nproc_per_node 8 --rdzv_backend=c10d  --rdzv_endpoint=localhost:29500 train_distill.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/65B  --train_json_file=arc-data/context-distill-sequences_pos.json --save_dir="checkpoints/65Bdistill0" --gpu-rank-offset=0
