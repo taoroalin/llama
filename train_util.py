@@ -61,7 +61,7 @@ def load(
     model_args: ModelArgs = ModelArgs(
         max_seq_len=max_seq_len, max_batch_size=max_batch_size, **params
     )
-    tokenizer = Tokenizer(model_path=tokenizer_path)
+    tokenizer = Tokenizer(model_path=tokenizer_path) # bos: 1 eos: 2 pad: -1
     model_args.vocab_size = tokenizer.n_words
     torch.set_default_tensor_type(torch.cuda.HalfTensor)
     model = Transformer(model_args)

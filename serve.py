@@ -20,6 +20,7 @@ api_keys = {"maGpAFLfHJpyBkYQL43ia3r5JRAfH9Bxo2W464"}
 max_seq_len = 1500 # 2048
 tokenizer_path =  "/home/taoroalin/llama/downloaded-weights/tokenizer.model"
 model_path =  "/home/taoroalin_gmail_com/llama/checkpoints/65Bdistill0/steps1500"
+# model_path =  "/home/taoroalin/llama/downloaded-weights/65B"
 
 local_rank, world_size = setup_model_parallel()
 
@@ -28,7 +29,7 @@ model,tokenizer,_=load(
     )
 generator = LLaMA(model, tokenizer)
 
-import torch.distributed as tdist
+import torch.distributed as t   dist
 
 def completions_per_proc(data):
 

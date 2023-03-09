@@ -22,9 +22,8 @@ from lion_pytorch import Lion
 
 
 def process_distill_data(
-    sequences, tokenizer, max_seq_len=2048, max_dps: int = 800, chunking=2
+    sequences, tokenizer, max_seq_len=2048, max_dps: int = 800, chunking=1
 ) -> torch.Tensor:
-    print("special tokens", tokenizer.bos_id, tokenizer.eos_id, tokenizer.pad_id)
     tokens = []
     masks = []
     n_rejected_no_model = 0
@@ -48,13 +47,14 @@ def process_distill_data(
                             alltoks[lenbefore[i] : lenbefore[i + 1]].tolist()
                         ),
                     )
-        chunk_size = int(max_seq_len / chunking)
-        n_contexts = int(alltoks.shape[0] / chunk_size) - 1
+        n_contexts = int(alltoks.shape[0] / max_seq_len)
         for i in range(n_contexts):
-            dp = alltoks[i * chunk_size : (i + chunking) * chunk_size]
-            msk = mask[i * chunk_size : (i + chunking) * chunk_size]
+            remainder = alltoks.shape[0]-n_contexts*max_seq_len
+            
+            dp = alltoks[remainder+i * max_seq_len :remainder+ (i + 1) * max_seq_len]
+            msk = mask[remainder+i * max_seq_len : remainder+(i + 1) * max_seq_len]
             dp[0] = tokenizer.bos_id
-            if msk.sum() > 30:
+            if msk.sum() > 50:
                 tokens.append(dp)
                 masks.append(dp)
             else:
@@ -73,15 +73,15 @@ def train(
     ckpt_dir: str,
     train_json_file: str,
     tokenizer_path: str = "/home/taoroalin/llama/downloaded-weights/tokenizer.model",
-    lr: float = 2e-5,
+    lr: float = 2e-6,
     max_seq_len: int = 2048,
-    batch_size: int = 8,
+    batch_size: int = 4,
     epochs=1,
     save_dir="checkpoints/13bft0",
     warmup_steps=20,
     max_dps: int = 1000000,
     gpu_rank_offset: int = 0,
-    weight_decay: float = 0.1,
+    weight_decay: float = 0.02,
     skip_checkpoints: int = 0,
     checkpoint_freq=500,
 ):
