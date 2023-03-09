@@ -75,7 +75,7 @@ def train(
     tokenizer_path: str = "/home/taoroalin/llama/downloaded-weights/tokenizer.model",
     lr: float = 2e-5,
     max_seq_len: int = 2048,
-    batch_size: int = 6,
+    batch_size: int = 8,
     epochs=1,
     save_dir="checkpoints/13bft0",
     warmup_steps=20,
@@ -102,7 +102,7 @@ def train(
     ].reshape(
         -1, batch_size, masks.shape[-1]
     )
-    optimizer = Lion(model.parameters(), lr, weight_decay)
+    optimizer = Lion(model.parameters(), lr=lr, weight_decay=weight_decay)
     if local_rank == 0:
         wandb.init(
             project="llama-7b-context-distill",
@@ -167,4 +167,4 @@ if __name__ == "__main__":
     fire.Fire(train)
 
 # torchrun --nproc_per_node 1 --rdzv_backend=c10d  --rdzv_endpoint=localhost:29501 train_distill.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/7B  --train_json_file=arc-data/context-distill-sequences_pos.json --save_dir="checkpoints/7Bdistill0" --gpu-rank-offset=2
-# torchrun --nproc_per_node 8 --rdzv_backend=c10d  --rdzv_endpoint=localhost:29500 train_distill.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/65B  --train_json_file=arc-data/context-distill-sequences_pos.json --save_dir="checkpoints/65Bdistill0" --gpu-rank-offset=0
+# torchrun --nproc_per_node 8 --rdzv_backend=c10d  --rdzv_endpoint=localhost:29500 train_distill.py --ckpt_dir /home/taoroalin/llama/downloaded-weights/65B  --train_json_file=arc-data/context-distill-sequences_pos.json --save_dir="/dev/shm/checkpoints/65Bdistill0" --gpu-rank-offset=0

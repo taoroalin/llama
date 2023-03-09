@@ -17,6 +17,7 @@ from fairscale.nn.model_parallel.layers import (
 )
 import torch.utils.checkpoint as grad_checkpoint
 
+
 @dataclass
 class ModelArgs:
     dim: int = 512
@@ -280,8 +281,32 @@ class Transformer(nn.Module):
             )
             mask = torch.triu(mask, diagonal=start_pos + 1).type_as(h)
 
-        for layer in self.layers:
-            h = grad_checkpoint.checkpoint(layer,h, start_pos, freqs_cis, mask, is_train=True,use_reentrant=False)
+        # for layer in self.layers:
+        #     h = grad_checkpoint.checkpoint(
+        #         layer, h, start_pos, freqs_cis, mask, is_train=True, use_reentrant=False
+        #     )
+
+        step_size = 4
+
+        def f(h_arg, start_pos, freqs_cis, mask, is_train, i):
+            h = h_arg
+            for j in range(step_size):
+                h = self.layers[i + j](h, start_pos, freqs_cis, mask, is_train)
+            return h
+
+        i = 0
+        while i < len(self.layers):
+            h = grad_checkpoint.checkpoint(
+                f,
+                h,
+                start_pos,
+                freqs_cis,
+                mask,
+                True,
+                i,
+                use_reentrant=False,
+            )
+            i += step_size
         h = self.norm(h)
         output = self.output(h)
         return output.float()
