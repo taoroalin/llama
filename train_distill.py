@@ -66,17 +66,18 @@ def process_distill_data(
             masks = masks[:max_dps]
             break
     print("rejected", n_rejected_no_model, "got", len(tokens))
-
-    return torch.stack(tokens, 0), torch.stack(masks, 0)
+    tokens_t,masks_t =  torch.stack(tokens, 0), torch.stack(masks, 0)
+    perm = torch.randperm(tokens_t.shape[0])
+    return tokens_t[perm],masks_t[perm]
 
 
 def train(
     ckpt_dir: str,
     train_json_file: str,
     tokenizer_path: str = "/home/taoroalin/llama/downloaded-weights/tokenizer.model",
-    lr: float = 3e-5,
+    lr: float = 8e-5,
     max_seq_len: int = 2048,
-    batch_size: int = 8,
+    batch_size: int = 6,
     epochs=1,
     save_dir="checkpoints/13bft0",
     warmup_steps=20,
@@ -87,7 +88,7 @@ def train(
     if local_rank > 0:
         sys.stdout = open(os.devnull, "w")
     sequences = json.load(open(train_json_file))
-
+    
     model, tokenizer, params = load(
         ckpt_dir, tokenizer_path, local_rank, world_size, max_seq_len, 32
     )
@@ -139,7 +140,7 @@ def train(
             if i != 0 and i % 500 == 0:
                 save_model(model, save_dir + f"/steps{i}", local_rank, params)
     except Exception as e:
-        save_model(model, save_dir, local_rank, params)
+        save_model(model, save_dir+"/recovery", local_rank, params)
         raise e
     save_model(model, save_dir, local_rank, params)
 
