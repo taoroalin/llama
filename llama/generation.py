@@ -20,6 +20,7 @@ class LLaMA:
         max_gen_len: int,
         temperature: float = 0.8,
         top_p: float = 0.95,
+        cut_early: bool = False,
     ) -> List[str]:
         bsz = len(prompts)
         params = self.model.params
@@ -29,7 +30,13 @@ class LLaMA:
 
         min_prompt_size = min([len(t) for t in prompt_tokens])
         max_prompt_size = max([len(t) for t in prompt_tokens])
-
+        to_cut=0
+        if cut_early:
+            to_cut = max_prompt_size +max_gen_len- params.max_seq_len
+            if to_cut > 0:
+                prompt_tokens = [x[to_cut:] for x in prompt_tokens]
+            min_prompt_size-=to_cut
+            max_prompt_size-=to_cut
         total_len = min(params.max_seq_len, max_gen_len + max_prompt_size)
 
         tokens = torch.full((bsz, total_len), self.tokenizer.pad_id).cuda().long()
@@ -56,7 +63,7 @@ class LLaMA:
         decoded = []
         for i, t in enumerate(tokens.tolist()):
             # cut to max gen len
-            t = t[: len(prompt_tokens[i]) + max_gen_len]
+            t = t[len(prompt_tokens[i]): len(prompt_tokens[i]) + max_gen_len]
             # cut to eos tok if any
             try:
                 t = t[: t.index(self.tokenizer.eos_id)]

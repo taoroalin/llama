@@ -17,7 +17,7 @@ from llama import ModelArgs, Transformer, Tokenizer, LLaMA
 from train_util import *
 api_keys = {"maGpAFLfHJpyBkYQL43ia3r5JRAfH9Bxo2W464"}
 
-max_seq_len = 2048
+max_seq_len = 1500 # 2048
 tokenizer_path =  "/home/taoroalin/llama/downloaded-weights/tokenizer.model"
 model_path =  "/home/taoroalin_gmail_com/llama/checkpoints/65Bdistill0/steps1500"
 
@@ -35,29 +35,37 @@ def completions_per_proc(data):
     prompts= data["prompt"] if isinstance(data["prompt"],list) else [data["prompt"]]
     if data["n"]>1:
         prompts = prompts*data["n"]
+    
     results = generator.generate(
-        prompts, max_gen_len=data["max_tokens"], temperature=data["temp"], top_p=0.95
+        prompts, max_gen_len=data["max_tokens"], temperature=data["temp"], top_p=0.95,cut_early=True
     )
     return[ {"completion":x} for x in results]
 object_list = [None]
 
 if local_rank==0:
-    from flask import Flask, request,jsonify,abort
+    # using twisted bc flask isn't in-thread which messes up torch multiprocessing
+    from twisted.web import server, resource
+    from twisted.internet import reactor
 
-    app = Flask(__name__)
-    print("rank 0!")
-    @app.route("/completions", methods=["POST"])
-    def completions():
-        print("got request")
-        data = request.json
-        if data["api_key"] not in api_keys:
-            raise Exception("Unauthorized")
-        object_list[0]=data
-        tdist.broadcast_object_list(object_list,src=0)
-        result = {"outputs":completions_per_proc(data)}
-        print("result",result)
-        return jsonify(result)
-    app.run('0.0.0.0', 5000,debug=True,threaded=False)
+    class Simple(resource.Resource):
+        isLeaf = True
+        def render_POST(self, request):
+            data =json.loads( request.content.read())
+            print("got request")
+            if "api_key" not in data or data["api_key"] not in api_keys:
+                raise Exception("Unauthorized")
+            object_list[0]=data
+            tdist.broadcast_object_list(object_list,src=0)
+            result = {"outputs":completions_per_proc(data)}
+            print("result",result)
+            request.setHeader(b"Content-Type", b"application/json")
+            return json.dumps(result).encode("utf-8")
+    site = server.Site(Simple())
+    reactor.listenTCP(8081, site,interface="127.0.0.1")
+    reactor.startRunning(False)
+    while True:
+        time.sleep(0.01)
+        reactor.iterate()
 else:
     while True:
         print("waiting for data")
@@ -69,3 +77,5 @@ else:
         result = completions_per_proc(data)
         if local_rank==0:
             print(result)
+            # curl -X POST http://34.133.140.190:8081/completions -H 'Content-Type: application/json' -d '{"prompt":"hello","temp":0,"max_tokens":200,"n":1,"api_key":"maGpAFLfHJpyBkYQL43ia3r5JRAfH9Bxo2W464"}'
+            # curl -X POST https://66bac92401a0.ngrok.io/completions -H 'Content-Type: application/json' -d '{"prompt":"hello","temp":0,"max_tokens":200,"n":1,"api_key":"maGpAFLfHJpyBkYQL43ia3r5JRAfH9Bxo2W464"}'
