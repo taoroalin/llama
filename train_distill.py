@@ -12,15 +12,13 @@ import fire
 import time
 import json
 import wandb
-import random
 import math
 
-from pathlib import Path
 
 from fairscale.nn.model_parallel.initialize import initialize_model_parallel
 
-from llama import ModelArgs, Transformer, Tokenizer, LLaMA
 import itertools
+from lion_pytorch import Lion
 
 
 def process_distill_data(
@@ -34,7 +32,7 @@ def process_distill_data(
         if all(x["type"] != "modelOutput" for x in seq):
             continue
         toks = [tokenizer.encode(x["body"], bos=False, eos=False) for x in seq]
-        lens = torch.tensor([0]+[len(x) for x in toks])
+        lens = torch.tensor([0] + [len(x) for x in toks])
         lenbefore = lens.cumsum(dim=0)
         alltoks = torch.tensor(list(itertools.chain(*toks))).long()
         mask = torch.zeros_like(alltoks)
@@ -43,7 +41,7 @@ def process_distill_data(
                 mask[lenbefore[i] : lenbefore[i + 1]] = 1
                 if len(tokens) < 5:
                     print("lenbefore", lenbefore)
-                    print("body",s["body"])
+                    print("body", s["body"])
                     print(
                         "printy by model",
                         tokenizer.decode(
@@ -66,16 +64,16 @@ def process_distill_data(
             masks = masks[:max_dps]
             break
     print("rejected", n_rejected_no_model, "got", len(tokens))
-    tokens_t,masks_t =  torch.stack(tokens, 0), torch.stack(masks, 0)
+    tokens_t, masks_t = torch.stack(tokens, 0), torch.stack(masks, 0)
     perm = torch.randperm(tokens_t.shape[0])
-    return tokens_t[perm],masks_t[perm]
+    return tokens_t[perm], masks_t[perm]
 
 
 def train(
     ckpt_dir: str,
     train_json_file: str,
     tokenizer_path: str = "/home/taoroalin/llama/downloaded-weights/tokenizer.model",
-    lr: float = 8e-5,
+    lr: float = 2e-5,
     max_seq_len: int = 2048,
     batch_size: int = 6,
     epochs=1,
@@ -83,12 +81,15 @@ def train(
     warmup_steps=20,
     max_dps: int = 1000000,
     gpu_rank_offset: int = 0,
+    weight_decay: float = 0.1,
+    skip_checkpoints: int = 0,
+    checkpoint_freq=500,
 ):
     local_rank, world_size = setup_model_parallel(gpu_rank_offset)
     if local_rank > 0:
         sys.stdout = open(os.devnull, "w")
     sequences = json.load(open(train_json_file))
-    
+
     model, tokenizer, params = load(
         ckpt_dir, tokenizer_path, local_rank, world_size, max_seq_len, 32
     )
@@ -101,12 +102,14 @@ def train(
     ].reshape(
         -1, batch_size, masks.shape[-1]
     )
-    optimizer = optim.SGD(model.parameters(), lr, momentum=0)
+    optimizer = Lion(model.parameters(), lr, weight_decay)
     if local_rank == 0:
         wandb.init(
             project="llama-7b-context-distill",
             config={
                 "learning_rate": lr,
+                "weight_decay": weight_decay,
+                "optimizer": "lion",
                 "architecture": ckpt_dir,
                 "dataset": "completion_evals.json",
                 "dataset_size": len(tokens),
@@ -114,7 +117,13 @@ def train(
             },
         )
     try:
-        for i, (dp, mask) in enumerate(zip(batched_tokens, batched_masks)):
+        # not for loop so we can skip checkpoints
+        i = skip_checkpoints * checkpoint_freq - 1
+        while i < len(batched_tokens) - 1:
+            i += 1
+            dp = batched_tokens[i]
+            mask = batched_tokens[i]
+            
             stime = time.time()
             optimizer.zero_grad()
             dp = dp.cuda()
@@ -137,10 +146,10 @@ def train(
                         "interval": time.time() - stime,
                     }
                 )
-            if i != 0 and i % 500 == 0:
+            if i != 0 and i % checkpoint_freq == 0:
                 save_model(model, save_dir + f"/steps{i}", local_rank, params)
     except Exception as e:
-        save_model(model, save_dir+"/recovery", local_rank, params)
+        save_model(model, save_dir + "/recovery", local_rank, params)
         raise e
     save_model(model, save_dir, local_rank, params)
 

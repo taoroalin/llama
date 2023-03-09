@@ -10,7 +10,6 @@ import fire
 import time
 import json
 import wandb
-import random
 import math
 
 from pathlib import Path
